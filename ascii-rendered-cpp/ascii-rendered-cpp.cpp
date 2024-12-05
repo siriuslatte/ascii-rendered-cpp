@@ -1,267 +1,195 @@
-/*
- * Autor: Claudio Ademir S·nchez Barajas
- * Fecha: 11/30/2024
- * 
- * DescripciÛn: Este es un pequeÒo proyecto que se encarga de renderizar un mapa en 3D, solamente muros y trata de emular
- * un jugador en el espacio. Es bastante primitivo y podria usar mejores tecnicas de renderizado. Pero es un buen punto de partida.
- * 
- * Claro que no hice esto 100% solo, tome de referencia demasiados recursos en internet, pero el codigo fue escrito por mi.
- * 
- * Recursos de los que tome referencia o aprendi algo:
- * - https://tartarus.org/martin/PorterStemmer/
- * - https://es.wikipedia.org/wiki/Wolfenstein_3D
- * - https://es.wikipedia.org/wiki/Ray_casting
- * - https://github.com/ShakedAp/ASCII-renderer
- * - https://es.wikipedia.org/wiki/PÌxel
- * - https://learn.microsoft.com/es-es/windows/win32/learnwin32/introduction-to-windows-programming-in-c--
- * - https://learnxinyminutes.com/docs/c++/
- */
-
-#include <iostream>
-#include <vector>
-#include <utility>
-#include <algorithm>
+Ôªø#include <iostream>
+#include <cmath>
 #include <chrono>
+
+#include <Windows.h>
 
 using namespace std;
 
-#include <stdio.h>
-#include <Windows.h>
-
 /*
- * FunciÛn que crea un mapa de 16x16 con las siguientes caracterÌsticas, este es totalmente modificable a gusto.
-*/
-static wstring create_map()
+ * Crear un mapa para el juego, donde '#' es una pared y '.' es un espacio vac√≠o. 
+ * 
+ * Puede modificarse perfectamente.
+ * 
+ * @returns - Un mapa en formato de cadena de texto.
+ */
+static wstring generate_map()
 {
-	wstring map;
-
-	map += L"################";
-	map += L"#..............#";
-	map += L"#.......########";
-	map += L"#..............#";
-	map += L"#......####....#";
-	map += L"#......####....#";
-	map += L"#......####....#";
-	map += L"###............#";
-	map += L"##.............#";
-	map += L"#......#########";
-	map += L"#......#.......#";
-	map += L"#......#.......#";
-	map += L"#..............#";
-	map += L"#......#########";
-	map += L"#..............#";
-	map += L"################";
-
-	return map;
+    return L"################"
+        L"#..............#"
+        L"#.......########"
+        L"#..............#"
+        L"#......####....#"
+        L"#......####....#"
+        L"#......####....#"
+        L"###............#"
+        L"##.............#"
+        L"#......#########"
+        L"#......#.......#"
+        L"#......#.......#"
+        L"#..............#"
+        L"#......#########"
+        L"#..............#"
+        L"################";
 }
 
+/*
+ * Punto de entrada de nuestro programa, como
+ * cualquier otro programa de C++.
+*/
 int main()
 {
-	int width = 120;
-	int height = 40;
+    // Resoluci√≥n de pantalla.
+    const int width = 120, height = 40;
 
-	int mapWidth = 16;
-	int mapHeight = 16;
+    // Mapa y posici√≥n del jugador.
+    const int map_width = 16, map_height = 16;
+    float plr_x = 10.0f, plr_y = 5.0f, rot = 0.0f;
 
-	float player_x = 14.7f;
-	float player_y = 5.09f;
-	float rotacion = 0.0f;
+    // Par√°metros de la c√°mara, su angulo de visi√≥n, profundidad y velocidad.
+    const float fov = 3.14159f / 4.0f, depth = 16.0f, speed = 5.0f;
 
-	const float fov = 3.14159f / 4.0f;
-	const float depth = 16.0f;
-	const float speed = 5.0f;
-	const float step = 0.1f;
+    // Buffer de pantalla.
+    wchar_t* screen = new wchar_t[width * height];
 
-	wchar_t* screen = new wchar_t[width * height];
+    // Crear consola y buffer de pantalla, aqui es en donde apareceran nuestros graficos.
+    static HANDLE console;
+    {
+        console = CreateConsoleScreenBuffer(GENERIC_READ | GENERIC_WRITE, 0, NULL, CONSOLE_TEXTMODE_BUFFER, NULL);
+        SetConsoleActiveScreenBuffer(console);
+    }
 
-	HANDLE consola;
-	{
-		consola = CreateConsoleScreenBuffer(GENERIC_READ | GENERIC_WRITE, 0, NULL, CONSOLE_TEXTMODE_BUFFER, NULL);
-		SetConsoleActiveScreenBuffer(consola);
-	}
+    // Buffer de escritura, esto no se usa, solo se usa por la consola.
+    DWORD bytesWritten = 0;
 
-	wstring map = create_map();
-	DWORD bytesWritten = 0;
+    // Mapa del juego.
+    wstring map = generate_map();
 
-	/* 
-	 * Variables para el manejo de tiempo, esto nos da una forma de poder
-	 * controlar el tiempo que se lleva en cada frame.
-	 * 
-	 * Tambien nos da la oportunidad de poder controlar mejor el movimiento del jugador
-	 * ya que podemos tomar en cuenta los pequeÒos microsegundos entre frames, asi
-	 * se obtiene un movimiento mas suave y controlado (incluso si el usuario tiene un
-	 * poco de retraso entre frame, esto es porque al ser ascii characters y estar escribiendo
-	 * directamente al buffer de la consola, se puede notar un poco de retraso en el render).
-	 */
-	auto current_dt = chrono::system_clock::now();
-	auto last_dt = chrono::system_clock::now();
+    // Tiempo de inicio.
+    auto current = chrono::system_clock::now();
 
-	while (true)
-	{
-		float dt;
-		{
-			last_dt = chrono::system_clock::now();
-			chrono::duration<float> elapsedTime = last_dt - current_dt;
+    /*
+	 * El loop de logica, aqui se controla el movimiento del jugador y 
+     * se renderiza el juego.
+     * 
+     * Usamos scanline rendering como el metodo mas eficiente para poder 
+     * tener una aplicaci√≥n eficiente en la consola. Claro que podriamos a√±adir
+	 * mas o quitar, pero este es un ejemplo b√°sico y nada que vaya a escalar mucho.
+     */
+    while (true)
+    {
+		// Calcular el tiempo que hubo entre frames, esto es para que el movimiento sea constante y mas deterministico entre frames.
+        auto previous = current;
 
-			dt = elapsedTime.count();
-		}
+        current = chrono::system_clock::now();
+        chrono::duration<float> elapsedTime = current - previous;
 
-		current_dt = last_dt;
+        // Este es el calculo final, delta time es como tal ya el tiempo transcurrido.
+        const float dt = elapsedTime.count();
 
-		/*
-		 * Maneja el movimiento del jugador, asi como su rotaciÛn y 
-		 * angulo de direcciÛn.
-		*/
-		{
-			if (GetAsyncKeyState((unsigned short)'A') & 0x8000)
-				rotacion -= (speed * 0.75f) * dt;
+        /*
+		 * Controles del jugador, esto nos ayuda a mover al jugador en el mapa.
+         */
+        {
+            const float x_sin = sinf(rot), y_cos = cosf(rot);
 
-			if (GetAsyncKeyState((unsigned short)'D') & 0x8000)
-				rotacion += (speed * 0.75f) * dt;
+			float move_x = x_sin * speed * dt, move_y = y_cos * speed * dt;
 
-			if (GetAsyncKeyState((unsigned short)'W') & 0x8000)
-			{
-				player_x += sinf(rotacion) * speed * dt;
-				player_y += cosf(rotacion) * speed * dt;
+            const unsigned short tile = map[static_cast<std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t>>::size_type>((plr_x + move_x)) * map_width + (static_cast<unsigned long long>(plr_y) + move_y)];
+			const bool hit = tile == '#';
 
-				if (map.c_str()[(int)player_x * static_cast<std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t>>::size_type>(mapWidth) + (int)player_y] == '#')
-				{
-					player_x -= sinf(rotacion) * speed * dt;
-					player_y -= cosf(rotacion) * speed * dt;
-				}
-			}
+			// Rotar a la izquierda.
+            if (GetAsyncKeyState(static_cast<unsigned short>('A')) & 0x8000)
+                rot -= speed * 0.75f * dt;
 
-			if (GetAsyncKeyState((unsigned short)'S') & 0x8000)
-			{
-				player_x -= sinf(rotacion) * speed * dt;
-				player_y -= cosf(rotacion) * speed * dt;
+            // Rotar a la derecha.
+            if (GetAsyncKeyState(static_cast<unsigned short>('D')) & 0x8000)
+                rot += speed * 0.75f * dt;
 
-				if (map.c_str()[(int)player_x * static_cast<std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t>>::size_type>(mapWidth) + (int)player_y] == '#')
-				{
-					player_x += sinf(rotacion) * speed * dt;
-					player_y += cosf(rotacion) * speed * dt;
-				}
-			}
-		}
+            // Adelante.
+            if (GetAsyncKeyState(static_cast<unsigned short>('W')) & 0x8000)
+            {
+                // Colisiones con las paredes, ignoremos los casteos de types.
+                if (!hit)
+                    plr_x += move_x;
+                    plr_y += move_y;
+                
+            }
 
-		for (int x = 0; x < width; x++)
-		{
-			float angulo = (rotacion - fov / 2.0f) + ((float)x / (float)width) * fov;
-			float distancia = 0.0f;
+            // Atras.
+            if (GetAsyncKeyState(static_cast<unsigned short>('S')) & 0x8000)
+            {
+				move_x = -x_sin * speed * dt;
+				move_y = -y_cos * speed * dt;
 
-			bool hit = false;
-			bool limite = false;
+                // Mas colisiones con paredes, pero esto es para atras.
+                if (!hit)
+                    plr_x += move_x;
+                    plr_y += move_y;
+            }
+        }
 
-			float sx = sinf(angulo);
-			float cy = cosf(angulo);
+        // Renderizar usando Scanline
+        for (int x = 0; x < width; x++)
+        {
+            float angle = (rot - fov / 2.0f) + (static_cast<float>(x) / static_cast<float>(width)) * fov;
 
-			while (true)
-			{
-				distancia += step;
+            float rx = sinf(angle);
+            float ry = cosf(angle);
+            float dist = 0.0f;
 
-				int rx = (int)(player_x + sx * distancia);
-				int ry = (int)(player_y + cy * distancia);
+            while (dist < depth)
+            {
+                dist += 0.1f;
 
-				if (rx < 0 || rx >= mapWidth || ry < 0 || ry >= mapHeight)
-				{
-					hit = true;
-					distancia = depth;
+                int nx = static_cast<int>(plr_x + rx * dist);
+                int ny = static_cast<int>(plr_y + ry * dist);
 
-					break;
-				}
-				else
-				{
-					if (map[static_cast<std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t>>::size_type>(rx) * mapWidth + ry] == '#')
-					{
-						hit = true;
+                if (nx < 0 || nx >= map_width || ny < 0 || ny >= map_height)
+                {
+                    dist = depth;
 
-						vector<pair<float, float>> p;
+                    break;
+                }
+                else if (map[static_cast<std::basic_string<wchar_t, std::char_traits<wchar_t>, std::allocator<wchar_t>>::size_type>(nx) * map_width + ny] == '#')
+                {
+                    break;
+                }
+            }
 
-						for (int tx = 0; tx < 2; tx++)
-							for (int ty = 0; ty < 2; ty++)
-							{
-								float vy = (float)ry + ty - player_y;
-								float vx = (float)rx + tx - player_x;
+            // Calcular alturas para cielo, pared y piso
+            int ceiling = (float)(height / 2.0) - height / dist;
+            int floor = height - ceiling;
 
-								float d = sqrt(vx * vx + vy * vy);
-								float dot = (sx * vx / d) + (cy * vy / d);
+            for (int y = 0; y < height; y++)
+            {
+                const int pixel = static_cast<int>(y * width + x);
 
-								p.push_back(make_pair(d, dot));
-							}
+                if (y < ceiling)
+                    screen[pixel] = ' ';
+                else if (y > ceiling && y <= floor)
+                    screen[pixel] = 0x2588;
+                else
+                {
+                    const float b = 1.0f - (static_cast<float>(y) - height / 2.0f) / (static_cast<float>(height) / 2.0f);
 
-						// Sortear desde los mas cercas hasta los mas lejos.
-						sort(p.begin(), p.end(), [](const pair<float, float>& left, const pair<float, float>& right) {return left.first < right.first; });
+                    char character = (b < 0.25f) ? '#' :
+                        (b < 0.5f) ? 'x' :
+                        (b < 0.75f) ? '.' :
+                        (b < 0.9f) ? '-' : ' ';
 
-						// Fisicamente imposuble ver mas de 4. Asi que simplemente nos hacemos cargo de los primeros 3 casos.
-						float fBound = 0.01;
+                    screen[pixel] = character;
 
-						if (acos(p[0].second) < fBound) limite = true;
-						if (acos(p[1].second) < fBound) limite = true;
-						if (acos(p[3].second) < fBound) limite = true;
+                }
+            }
+        }
 
-						break;
-					}
-				}
-			}
+        // Convertir el ultimo en el caracter de escape.
+        screen[width * height - 1] = '\0';
 
-			int nCeiling = (float)(height / 2.0) - height / distancia;
-			int nFloor = height - nCeiling;
+		// Renderizar en la consola, esto ya es el paso final en todo el proceso.
+        WriteConsoleOutputCharacter(console, screen, width * height, { 0, 0 }, &bytesWritten);
+    }
 
-			short nShade = ' ';
-
-			// Determinamos que tan lejos esta la pared de la vista del jugador, tenemos varios caracteres Unicode, si desea
-			// puede cambiarlos, pero estos fueron de mis referencias.
-			{
-				if (distancia <= depth / 4.0f) nShade = 0x2588;
-				else if (distancia < depth / 3.0f)	nShade = 0x2593;
-				else if (distancia < depth / 2.0f) nShade = 0x2592;
-				else if (distancia < depth)	nShade = 0x2591;
-				else nShade = ' ';
-
-				if (limite)	nShade = ' ';
-			}
-
-			for (int y = 0; y < height; y++)
-			{
-				if (y <= nCeiling)
-					screen[y * width + x] = ' ';
-				else if (y > nCeiling && y <= nFloor)
-					screen[y * width + x] = nShade;
-				else
-				{
-					// Calculamos la sombra basada en la distancia, esto para el piso unicamente.
-					float b = 1.0f - (((float)y - height / 2.0f) / ((float)height / 2.0f));
-
-					if (b < 0.25)		nShade = '#';
-					else if (b < 0.5)	nShade = 'x';
-					else if (b < 0.75)	nShade = '.';
-					else if (b < 0.9)	nShade = '-';
-					else				nShade = ' ';
-
-					screen[y * width + x] = nShade;
-				}
-			}
-		}
-
-		/*
-		 * Formatea la pantalla con la informaciÛn del jugador, asÌ como los FPS que se llevan.
-		 */
-		{
-			for (int nx = 0; nx < mapWidth; nx++)
-				for (int ny = 0; ny < mapWidth; ny++)
-				{
-					screen[(ny + 1) * width + nx] = map[ny * mapWidth + nx];
-				}
-
-			screen[((int)player_x + 1) * width + (int)player_y] = 'P';
-		}
-
-		// El ultimo caracter de la pantalla debe ser un null.
-		screen[width * height - 1] = '\0';
-
-		// Escribir en la consola, este es el ultimo paso.
-		WriteConsoleOutputCharacter(consola, screen, width * height, { 0,0 }, &bytesWritten);
-	}
-
-	return 0;
+    return 0;
 }
